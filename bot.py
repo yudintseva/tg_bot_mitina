@@ -12,7 +12,7 @@ from telegram.ext import (
 
 TOKEN = os.environ["BOT_TOKEN"]
 
-# Кто уже писал боту (для напоминаний). Локально — достаточно.
+# Кто уже писал боту (для напоминаний).
 SUBSCRIBERS: set[int] = set()
 
 INTRO_TEXT = (
@@ -31,10 +31,14 @@ INTRO_TEXT = (
     "Ты готова?"
 )
 
+# ⚠️ ВАЖНО:
+# video_note — это file_id кружочка. Пока пусто ("") — кружочек просто не отправится.
+# Когда получишь file_id, вставь его сюда для каждого дня.
+
 DAYS = {
     1: {
         "photo": "day1.jpg",
-        "video_note": "day1.mp4",
+        "video_note": "",  # <-- сюда вставишь file_id day1
         "first": (
             "🟢 *День 1. Где я теряю уверенность*\n\n"
             "*Фокус:* осознание, а не изменение.\n"
@@ -55,7 +59,7 @@ DAYS = {
     },
     2: {
         "photo": "day2.jpg",
-        "video_note": "day2.mp4",
+        "video_note": "",  # <-- file_id day2
         "first": (
             "🟡 *День 2. Внутренний диалог*\n\n"
             "*Фокус:* как ты с собой говоришь, когда сомневаешься.\n"
@@ -77,7 +81,7 @@ DAYS = {
     },
     3: {
         "photo": "day3.jpg",
-        "video_note": "day3.mp4",
+        "video_note": "",  # <-- file_id day3
         "first": (
             "🟠 *День 3. Страх оценки*\n"
             "ключевой день\n\n"
@@ -96,7 +100,7 @@ DAYS = {
     },
     4: {
         "photo": "day4.jpg",
-        "video_note": "day4.mp4",
+        "video_note": "",  # <-- file_id day4
         "first": (
             "🔵 *День 4. Право быть собой*\n\n"
             "*Фокус:* разрешение.\n"
@@ -119,7 +123,7 @@ DAYS = {
     },
     5: {
         "photo": "day5.jpg",
-        "video_note": "day5.mp4",
+        "video_note": "",  # <-- file_id day5
         "first": (
             "🟣 *День 5. Сборка опоры*\n\n"
             "*Фокус:* интеграция\n"
@@ -138,7 +142,7 @@ DAYS = {
     },
     6: {
         "photo": "day6.jpg",
-        "video_note": "day6.mp4",
+        "video_note": "",  # <-- file_id day6
         "first": (
             "🟤 *День 6. Возвращение к себе*"
         ),
@@ -194,6 +198,16 @@ def main_menu() -> ReplyKeyboardMarkup:
         input_field_placeholder="Выбери день…",
     )
 
+# -------- DEBUG: ПОЛУЧЕНИЕ file_id ДЛЯ КРУЖОЧКА --------
+# Отправь боту кружочек — он ответит file_id.
+async def debug_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    SUBSCRIBERS.add(chat_id)
+
+    if update.message and update.message.video_note:
+        file_id = update.message.video_note.file_id
+        await update.message.reply_text(f"file_id:\n{file_id}", reply_markup=main_menu())
+
 # -------- ЭКРАНЫ --------
 
 async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -217,7 +231,7 @@ async def send_day(update: Update, context: ContextTypes.DEFAULT_TYPE, day_num: 
         await update.message.reply_text("Такого дня нет.", reply_markup=main_menu())
         return
 
-    # 1) первое сообщение дня: фото + заголовок/фокус/смысл
+    # 1) фото + заголовок/фокус/смысл
     with open(day["photo"], "rb") as photo:
         await update.message.reply_photo(
             photo=photo,
@@ -226,13 +240,14 @@ async def send_day(update: Update, context: ContextTypes.DEFAULT_TYPE, day_num: 
             reply_markup=main_menu()
         )
 
-    # 2) кружочек (video note) без подписи
-    try:
-        with open(day["video_note"], "rb") as vn:
-            await update.message.reply_video_note(video_note=vn)
-    except FileNotFoundError:
-        # если файла пока нет — просто молча пропускаем
-        pass
+    # 2) кружочек (video note) по file_id — без подписи
+    vn_id = (day.get("video_note") or "").strip()
+    if vn_id:
+        try:
+            await update.message.reply_video_note(video_note=vn_id)
+        except Exception:
+            # если file_id неправильный/устарел — просто не падаем
+            pass
 
     # 3) остальные части дня
     for part in day["parts"]:
@@ -300,7 +315,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     app = Application.builder().token(TOKEN).build()
+
+    # важно: сначала ловим кружочки, потом обычный текст
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.VIDEO_NOTE, debug_video_note))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
     app.job_queue.run_daily(
