@@ -1,5 +1,7 @@
 import datetime
+import json
 import os
+from zoneinfo import ZoneInfo
 
 from telegram import ReplyKeyboardMarkup, KeyboardButton, Update
 from telegram.ext import (
@@ -12,8 +14,25 @@ from telegram.ext import (
 
 TOKEN = os.environ["BOT_TOKEN"]
 
+SUB_FILE = "subscribers.json"
+
+def load_subscribers() -> set[int]:
+    try:
+        with open(SUB_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return set(int(x) for x in data)
+    except Exception:
+        return set()
+
+def save_subscribers() -> None:
+    try:
+        with open(SUB_FILE, "w", encoding="utf-8") as f:
+            json.dump(sorted(list(SUBSCRIBERS)), f)
+    except Exception:
+        pass
+
 # Кто уже писал боту (для напоминаний).
-SUBSCRIBERS: set[int] = set()
+SUBSCRIBERS: set[int] = load_subscribers()
 
 INTRO_TEXT = (
     "🌿 *Спокойная уверенность*\n\n"
@@ -31,14 +50,11 @@ INTRO_TEXT = (
     "Ты готова?"
 )
 
-# ⚠️ ВАЖНО:
-# video_note — это file_id кружочка. Пока пусто ("") — кружочек просто не отправится.
-# Когда получишь file_id, вставь его сюда для каждого дня.
-
+# video_note — это file_id кружочка. Пока пусто ("") — кружочек не отправится.
 DAYS = {
     1: {
         "photo": "day1.jpg",
-        "video_note": "",  # <-- сюда вставишь file_id day1
+        "video_note": "",  # <-- file_id day1
         "first": (
             "🟢 *День 1. Где я теряю уверенность*\n\n"
             "*Фокус:* осознание, а не изменение.\n"
@@ -174,7 +190,7 @@ DAYS = {
     },
 }
 
-# -------- МЕНЮ (ВСЕГДА ВНИЗУ) --------
+# -------- МЕНЮ --------
 
 BTN_HOME = "🏠 В начало"
 BTN_DAY1 = "🟢 День 1"
@@ -198,13 +214,21 @@ def main_menu() -> ReplyKeyboardMarkup:
         input_field_placeholder="Выбери день…",
     )
 
-# -------- DEBUG: ПОЛУЧЕНИЕ file_id ДЛЯ КРУЖОЧКА --------
-# Отправь боту кружочек — он ответит file_id.
-async def debug_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    SUBSCRIBERS.add(chat_id)
+def remember(chat_id: int) -> None:
+    if chat_id not in SUBSCRIBERS:
+        SUBSCRIBERS.add(chat_id)
+        save_subscribers()
 
-    if update.message and update.message.video_note:
+# -------- DEBUG: file_id кружочка --------
+
+async def debug_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+
+    chat_id = update.effective_chat.id
+    remember(chat_id)
+
+    if update.message.video_note:
         file_id = update.message.video_note.file_id
         await update.message.reply_text(f"file_id:\n{file_id}", reply_markup=main_menu())
 
@@ -212,7 +236,7 @@ async def debug_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    SUBSCRIBERS.add(chat_id)
+    remember(chat_id)
 
     with open("olga.jpg", "rb") as photo:
         await update.message.reply_photo(
@@ -224,14 +248,13 @@ async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def send_day(update: Update, context: ContextTypes.DEFAULT_TYPE, day_num: int):
     chat_id = update.effective_chat.id
-    SUBSCRIBERS.add(chat_id)
+    remember(chat_id)
 
     day = DAYS.get(day_num)
     if not day:
         await update.message.reply_text("Такого дня нет.", reply_markup=main_menu())
         return
 
-    # 1) фото + заголовок/фокус/смысл
     with open(day["photo"], "rb") as photo:
         await update.message.reply_photo(
             photo=photo,
@@ -240,20 +263,17 @@ async def send_day(update: Update, context: ContextTypes.DEFAULT_TYPE, day_num: 
             reply_markup=main_menu()
         )
 
-    # 2) кружочек (video note) по file_id — без подписи
     vn_id = (day.get("video_note") or "").strip()
     if vn_id:
         try:
             await update.message.reply_video_note(video_note=vn_id)
         except Exception:
-            # если file_id неправильный/устарел — просто не падаем
             pass
 
-    # 3) остальные части дня
     for part in day["parts"]:
         await update.message.reply_text(part, parse_mode="Markdown")
 
-# -------- НАПОМИНАНИЕ 12:00 --------
+# -------- НАПОМИНАНИЕ 12:00 (Europe/Warsaw) --------
 
 async def daily_reminder(context: ContextTypes.DEFAULT_TYPE):
     for chat_id in list(SUBSCRIBERS):
@@ -262,7 +282,7 @@ async def daily_reminder(context: ContextTypes.DEFAULT_TYPE):
                 chat_id=chat_id,
                 text=(
                     "⏰ *Напоминание*\n\n"
-                    "Если сегодня есть место — пройди следующий день программы 💚\n"
+                    "Если сегодня есть время — пройди следующий день программы 💚\n"
                     "Выбери день в меню внизу 👇"
                 ),
                 parse_mode="Markdown",
@@ -277,8 +297,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_home(update, context)
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+
     chat_id = update.effective_chat.id
-    SUBSCRIBERS.add(chat_id)
+    remember(chat_id)
 
     text = (update.message.text or "").strip()
 
@@ -316,14 +339,14 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TOKEN).build()
 
-    # важно: сначала ловим кружочки, потом обычный текст
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.VIDEO_NOTE, debug_video_note))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
+    # каждый день в 12:00 по Europe/Warsaw
     app.job_queue.run_daily(
         daily_reminder,
-        time=datetime.time(hour=12, minute=0)
+        time=datetime.time(hour=12, minute=0, tzinfo=ZoneInfo("Europe/Warsaw"))
     )
 
     app.run_polling()
